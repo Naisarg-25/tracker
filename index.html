@@ -66,7 +66,7 @@
   @keyframes blink { 0%,100%{opacity:1}50%{opacity:0.35} }
 
   #canvas-wrap { flex: 1; position: relative; overflow: hidden; }
-  canvas { display: block; width: 100%; height: 100%; touch-action: none; transition: transform 0.3s ease; transform-origin: center center; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
   /* Compass */
   #compass {
@@ -211,10 +211,13 @@ let canvasW = 0, canvasH = 0;
 let scale = 4;          // px per meter — auto-adjusts
 let dpr = window.devicePixelRatio || 1;
 
-// Pinch-zoom state
+// Map state
 let userZoom = 1;
+let panX = 0, panY = 0;
 let lastPinchDist = 0;
 let isPinching = false;
+let isDragging = false;
+let lastTouchX = 0, lastTouchY = 0;
 
 // Heading / compass
 let currentHeading = 0; // degrees from north
@@ -242,49 +245,60 @@ function haversine(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-function geoToCanvas(lat, lng) {
+function geoToMapSpace(lat, lng) {
+  if (originLat === null) return {x:0, y:0};
   const mPerDeg = 111320;
   const dx = (lng - originLng) * mPerDeg * Math.cos(originLat * Math.PI / 180);
   const dy = -(lat - originLat) * mPerDeg;
-  return { x: canvasW / 2 + dx * scale, y: canvasH / 2 + dy * scale };
+  return { x: dx * scale, y: dy * scale };
+}
+
+function geoToScreenSpace(lat, lng) {
+  const mapPt = geoToMapSpace(lat, lng);
+  let x = mapPt.x + panX;
+  let y = mapPt.y + panY;
+  
+  // Apply rotation
+  const angle = -currentHeading * Math.PI / 180;
+  const rx = x * Math.cos(angle) - y * Math.sin(angle);
+  const ry = x * Math.sin(angle) + y * Math.cos(angle);
+  
+  // Apply zoom and center on screen
+  return {
+    x: rx * userZoom + canvasW / 2,
+    y: ry * userZoom + canvasH / 2
+  };
 }
 
 function reproject() {
-  points = geoPoints.map(p => ({ ...geoToCanvas(p.lat, p.lng), ...p }));
-}
-
-function autoScale() {
-  if (geoPoints.length < 2) return;
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  geoPoints.forEach(p => {
-    const c = geoToCanvas(p.lat, p.lng);
-    if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
-    if (c.y < minY) minY = c.y; if (c.y > maxY) maxY = c.y;
-  });
-  const margin = 60;
-  const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
-  const fitScale = Math.min((canvasW - margin*2) / (spanX / scale), (canvasH - margin*2) / (spanY / scale));
-  if (fitScale > 0 && fitScale < scale * 0.8) {
-    scale *= 0.85;
-  }
+  points = geoPoints.map(p => ({ ...geoToMapSpace(p.lat, p.lng), ...p }));
 }
 
 /* ---- drawing ---- */
-function drawGrid() {
+function drawGridMapSpace() {
   ctx.save();
   ctx.strokeStyle = 'rgba(0,0,0,0.05)';
-  ctx.lineWidth = 0.5;
+  ctx.lineWidth = 1 / userZoom;
   const step = 40;
-  for (let x = 0; x < canvasW; x += step) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvasH); ctx.stroke(); }
-  for (let y = 0; y < canvasH; y += step) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvasW,y); ctx.stroke(); }
+  const extent = (Math.max(canvasW, canvasH) / userZoom) * 1.5;
+  const startX = Math.floor((-panX - extent) / step) * step;
+  const endX = Math.floor((-panX + extent) / step) * step;
+  const startY = Math.floor((-panY - extent) / step) * step;
+  const endY = Math.floor((-panY + extent) / step) * step;
+
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += step) { ctx.moveTo(x, startY); ctx.lineTo(x, endY); }
+  for (let y = startY; y <= endY; y += step) { ctx.moveTo(startX, y); ctx.lineTo(endX, y); }
+  ctx.stroke();
   ctx.restore();
 }
 
-function drawPath() {
+function drawPathMapSpace() {
   if (points.length === 0) return;
+  const invZ = 1 / userZoom;
 
   if (points.length === 1) {
-    ctx.beginPath(); ctx.arc(points[0].x, points[0].y, 8, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(points[0].x, points[0].y, 8 * invZ, 0, Math.PI*2);
     ctx.fillStyle = '#1D9E75'; ctx.fill();
     return;
   }
@@ -295,7 +309,7 @@ function drawPath() {
   ctx.moveTo(points[0].x, points[0].y);
   for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
   ctx.strokeStyle = 'rgba(0,0,0,0.08)';
-  ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.lineWidth = 6 * invZ; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.stroke();
   ctx.restore();
 
@@ -309,39 +323,65 @@ function drawPath() {
     ctx.moveTo(points[i-1].x, points[i-1].y);
     ctx.lineTo(points[i].x, points[i].y);
     ctx.strokeStyle = `rgb(${r},${g},${b})`;
-    ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 4 * invZ; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.stroke();
   }
 
   // START dot
   const s = points[0];
-  ctx.beginPath(); ctx.arc(s.x, s.y, 8, 0, Math.PI*2);
+  ctx.beginPath(); ctx.arc(s.x, s.y, 8 * invZ, 0, Math.PI*2);
   ctx.fillStyle = '#fff'; ctx.fill();
-  ctx.beginPath(); ctx.arc(s.x, s.y, 8, 0, Math.PI*2);
-  ctx.strokeStyle = '#1D9E75'; ctx.lineWidth = 3; ctx.stroke();
-  ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI*2);
+  ctx.beginPath(); ctx.arc(s.x, s.y, 8 * invZ, 0, Math.PI*2);
+  ctx.strokeStyle = '#1D9E75'; ctx.lineWidth = 3 * invZ; ctx.stroke();
+  ctx.beginPath(); ctx.arc(s.x, s.y, 4 * invZ, 0, Math.PI*2);
   ctx.fillStyle = '#1D9E75'; ctx.fill();
 
   // END dot
   const e = points[points.length-1];
-  ctx.beginPath(); ctx.arc(e.x, e.y, 9, 0, Math.PI*2);
+  ctx.beginPath(); ctx.arc(e.x, e.y, 9 * invZ, 0, Math.PI*2);
   ctx.fillStyle = tracking ? '#E24B4A' : '#378ADD';
   ctx.fill();
-  ctx.beginPath(); ctx.arc(e.x, e.y, 9, 0, Math.PI*2);
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.beginPath(); ctx.arc(e.x, e.y, 9 * invZ, 0, Math.PI*2);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5 * invZ; ctx.stroke();
+}
 
-  // position start label
-  startLabel.style.display = 'block';
-  startLabel.style.left = s.x + 'px';
-  startLabel.style.top = s.y + 'px';
+function updateHTMLOverlays() {
+  if (points.length > 0) {
+    const sPos = geoToScreenSpace(points[0].lat, points[0].lng);
+    startLabel.style.display = 'block';
+    startLabel.style.left = sPos.x + 'px';
+    startLabel.style.top = sPos.y + 'px';
+  }
+  if (geoPoints.length > 0 && tracking) {
+    const lastP = geoPoints[geoPoints.length - 1];
+    const pt = geoToScreenSpace(lastP.lat, lastP.lng);
+    const radiusPx = lastP.accuracy * scale * userZoom;
+    accuracyRing.style.display = 'block';
+    accuracyRing.style.left = pt.x + 'px';
+    accuracyRing.style.top = pt.y + 'px';
+    accuracyRing.style.width = radiusPx * 2 + 'px';
+    accuracyRing.style.height = radiusPx * 2 + 'px';
+  } else {
+    accuracyRing.style.display = 'none';
+  }
 }
 
 function redraw() {
   ctx.clearRect(0, 0, canvasW, canvasH);
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvasW, canvasH);
-  drawGrid();
-  drawPath();
+
+  ctx.save();
+  ctx.translate(canvasW / 2, canvasH / 2);
+  ctx.scale(userZoom, userZoom);
+  ctx.rotate(-currentHeading * Math.PI / 180);
+  ctx.translate(panX, panY);
+
+  drawGridMapSpace();
+  drawPathMapSpace();
+
+  ctx.restore();
+  updateHTMLOverlays();
 }
 
 /* ---- GPS ---- */
@@ -361,17 +401,16 @@ function onGPSSuccess(pos) {
     const prev = geoPoints[geoPoints.length - 1];
     const d = haversine(prev.lat, prev.lng, lat, lng);
     if (d < 2) {
-      updateAccuracyRing(lat, lng, accuracy);
+      prev.accuracy = accuracy;
+      redraw();
       return;
     }
     totalDist += d;
   }
 
   geoPoints.push({ lat, lng, accuracy, speed: speed || 0, ts: Date.now() });
-  autoScale();
   reproject();
   updateStats(speed);
-  updateAccuracyRing(lat, lng, accuracy);
   redraw();
 
   gpsDot.className = 'green';
@@ -390,15 +429,7 @@ function onGPSError(err) {
   }
 }
 
-function updateAccuracyRing(lat, lng, accuracy) {
-  const pt = geoToCanvas(lat, lng);
-  const radiusPx = accuracy * scale;
-  accuracyRing.style.display = 'block';
-  accuracyRing.style.width = radiusPx * 2 + 'px';
-  accuracyRing.style.height = radiusPx * 2 + 'px';
-  accuracyRing.style.left = pt.x + 'px';
-  accuracyRing.style.top = pt.y + 'px';
-}
+
 
 /* ---- stats ---- */
 function updateStats(speed) {
@@ -424,6 +455,8 @@ function startTracking() {
     gpsDot.className = 'red';
     return;
   }
+
+  initCompass();
 
   tracking = true;
   gpsDot.className = 'yellow';
@@ -483,6 +516,7 @@ function clearAll() {
   stopTracking();
   geoPoints = []; points = []; totalDist = 0; elapsed = 0;
   originLat = null; originLng = null; scale = 4;
+  userZoom = 1; panX = 0; panY = 0;
   document.getElementById('pt-count').textContent = '0';
   document.getElementById('dist-out').textContent = '0 m';
   document.getElementById('timer-out').textContent = '00:00';
@@ -499,53 +533,113 @@ function clearAll() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-/* ---- Pinch-to-zoom ---- */
+/* ---- Pan & Zoom ---- */
 canvas.addEventListener('touchstart', function(e) {
-  if (e.touches.length === 2) {
+  if (e.touches.length === 1) {
+    isDragging = true;
+    lastTouchX = e.touches[0].clientX;
+    lastTouchY = e.touches[0].clientY;
+  } else if (e.touches.length === 2) {
     isPinching = true;
+    isDragging = false;
     const dx = e.touches[0].clientX - e.touches[1].clientX;
     const dy = e.touches[0].clientY - e.touches[1].clientY;
     lastPinchDist = Math.sqrt(dx*dx + dy*dy);
-    e.preventDefault();
   }
+  e.preventDefault();
 }, { passive: false });
 
 canvas.addEventListener('touchmove', function(e) {
-  if (isPinching && e.touches.length === 2) {
+  if (isDragging && e.touches.length === 1) {
+    const dx = e.touches[0].clientX - lastTouchX;
+    const dy = e.touches[0].clientY - lastTouchY;
+    
+    const mapDx = dx / userZoom;
+    const mapDy = dy / userZoom;
+    const angle = currentHeading * Math.PI / 180;
+    
+    panX += mapDx * Math.cos(angle) - mapDy * Math.sin(angle);
+    panY += mapDx * Math.sin(angle) + mapDy * Math.cos(angle);
+    
+    lastTouchX = e.touches[0].clientX;
+    lastTouchY = e.touches[0].clientY;
+    redraw();
+  } else if (isPinching && e.touches.length === 2) {
     const dx = e.touches[0].clientX - e.touches[1].clientX;
     const dy = e.touches[0].clientY - e.touches[1].clientY;
     const dist = Math.sqrt(dx*dx + dy*dy);
     if (lastPinchDist > 0) {
-      const delta = dist / lastPinchDist;
-      userZoom = Math.min(Math.max(userZoom * delta, 0.3), 5);
-      canvas.style.transform = `rotate(${-currentHeading}deg) scale(${userZoom})`;
+      userZoom = Math.min(Math.max(userZoom * (dist / lastPinchDist), 0.15), 15);
+      redraw();
     }
     lastPinchDist = dist;
-    e.preventDefault();
   }
+  e.preventDefault();
 }, { passive: false });
 
 canvas.addEventListener('touchend', function(e) {
   if (e.touches.length < 2) isPinching = false;
+  if (e.touches.length < 1) isDragging = false;
+  if (e.touches.length === 1) {
+    lastTouchX = e.touches[0].clientX;
+    lastTouchY = e.touches[0].clientY;
+    isDragging = true;
+  }
 });
 
+/* ---- Mouse Pan & Zoom ---- */
+canvas.addEventListener('mousedown', function(e) {
+  isDragging = true;
+  lastTouchX = e.clientX;
+  lastTouchY = e.clientY;
+});
+
+window.addEventListener('mousemove', function(e) {
+  if (isDragging) {
+    const dx = e.clientX - lastTouchX;
+    const dy = e.clientY - lastTouchY;
+    
+    const mapDx = dx / userZoom;
+    const mapDy = dy / userZoom;
+    const angle = currentHeading * Math.PI / 180;
+    
+    panX += mapDx * Math.cos(angle) - mapDy * Math.sin(angle);
+    panY += mapDx * Math.sin(angle) + mapDy * Math.cos(angle);
+    
+    lastTouchX = e.clientX;
+    lastTouchY = e.clientY;
+    redraw();
+  }
+});
+
+window.addEventListener('mouseup', function(e) {
+  isDragging = false;
+});
+
+canvas.addEventListener('wheel', function(e) {
+  e.preventDefault();
+  const delta = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  userZoom = Math.min(Math.max(userZoom * delta, 0.15), 15);
+  redraw();
+}, { passive: false });
+
 /* ---- Device Orientation / Compass ---- */
+let compassInitDone = false;
 function updateCompass(heading) {
   currentHeading = heading;
-  // Rotate compass arrow to point north relative to device
   compassArrow.style.transform = `rotate(${heading}deg)`;
-  // Rotate canvas so track aligns with user direction
-  canvas.style.transform = `rotate(${-heading}deg) scale(${userZoom})`;
-  // Update label
+  
   const dirs = ['N','NE','E','SE','S','SW','W','NW'];
   const idx = Math.round(heading / 45) % 8;
   compassLabel.textContent = dirs[idx];
+  
+  redraw();
 }
 
 function initCompass() {
-  // Try absolute orientation first (iOS)
+  if (compassInitDone) return;
+  compassInitDone = true;
   if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-    // iOS 13+
     DeviceOrientationEvent.requestPermission().then(function(state) {
       if (state === 'granted') {
         window.addEventListener('deviceorientationabsolute', handleOrientation);
@@ -553,7 +647,6 @@ function initCompass() {
       }
     }).catch(console.error);
   } else {
-    // Android / desktop
     window.addEventListener('deviceorientationabsolute', handleOrientation);
     window.addEventListener('deviceorientation', handleOrientation);
   }
@@ -562,16 +655,12 @@ function initCompass() {
 function handleOrientation(e) {
   let heading = 0;
   if (e.webkitCompassHeading !== undefined) {
-    // iOS
     heading = e.webkitCompassHeading;
   } else if (e.alpha !== null) {
-    // Android: alpha is degrees from north when using absolute orientation
     heading = e.absolute ? (360 - e.alpha) % 360 : (360 - e.alpha) % 360;
   }
   updateCompass(heading);
 }
-
-initCompass();
 </script>
 </body>
 </html>
