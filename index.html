@@ -388,19 +388,29 @@ function redraw() {
 function onGPSSuccess(pos) {
   const { latitude: lat, longitude: lng, accuracy, speed } = pos.coords;
 
+  // STRICT FILTER: Reject points with poor accuracy (> 10 meters)
+  if (accuracy > 10) {
+    gpsDot.className = 'yellow';
+    gpsText.textContent = `Weak GPS (±${Math.round(accuracy)}m)`;
+    
+    // If we have a previous point, just update its ring size to show the weak signal
+    if (geoPoints.length > 0) {
+      geoPoints[geoPoints.length - 1].accuracy = accuracy;
+      redraw();
+    }
+    return;
+  }
+
   if (originLat === null) {
     originLat = lat; originLng = lng;
     overlay.classList.add('hidden');
   }
 
-  // filter jitter: skip if accuracy > 30m and we already have points
-  if (geoPoints.length > 0 && accuracy > 40) return;
-
-  // skip if hasn't moved enough (< 2m)
+  // skip if hasn't moved enough (< 1.5m) to avoid jitter when standing still
   if (geoPoints.length > 0) {
     const prev = geoPoints[geoPoints.length - 1];
     const d = haversine(prev.lat, prev.lng, lat, lng);
-    if (d < 2) {
+    if (d < 1.5) {
       prev.accuracy = accuracy;
       redraw();
       return;
