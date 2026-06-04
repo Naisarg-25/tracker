@@ -2,77 +2,463 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Walk Tracker Mobile Fix</title>
-
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Walk Path Tracker</title>
 <style>
-body { font-family: sans-serif; text-align: center; padding: 20px; }
-button { padding: 12px 20px; font-size: 16px; margin: 10px; }
-#msg { margin-top: 20px; color: red; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; width: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f0; }
+
+  #app { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
+
+  #toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px;
+    background: #ffffff;
+    border-bottom: 1px solid #e0e0d8;
+    flex-shrink: 0;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+  }
+  #toolbar h1 {
+    font-size: 15px; font-weight: 600; color: #1a1a1a;
+    margin-right: auto; letter-spacing: -0.01em;
+  }
+  #toolbar h1 span { color: #1D9E75; }
+
+  .btn {
+    display: flex; align-items: center; gap: 5px;
+    padding: 8px 14px; border-radius: 10px;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer; border: none; outline: none;
+    transition: all 0.15s; -webkit-tap-highlight-color: transparent;
+    user-select: none; letter-spacing: 0.01em;
+  }
+  .btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+  .btn:active { transform: scale(0.94); }
+  .btn-start { background: #1D9E75; color: #fff; }
+  .btn-start:hover { background: #16876300; }
+  .btn-start:disabled { background: #a8d5c5; cursor: not-allowed; transform: none; }
+  .btn-stop { background: #E24B4A; color: #fff; }
+  .btn-stop:disabled { background: #f0a9a9; cursor: not-allowed; transform: none; }
+  .btn-save { background: #378ADD; color: #fff; }
+  .btn-save:disabled { background: #a8c8ee; cursor: not-allowed; transform: none; }
+  .btn-clear { background: #f0efea; color: #555; }
+
+  #status-bar {
+    display: flex; align-items: center; gap: 0;
+    background: #fff; border-bottom: 1px solid #e0e0d8;
+    flex-shrink: 0; overflow-x: auto;
+  }
+  .stat-item {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 7px 14px; border-right: 1px solid #e0e0d8; flex-shrink: 0;
+  }
+  .stat-label { font-size: 10px; color: #999; text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat-val { font-size: 15px; font-weight: 600; color: #1a1a1a; line-height: 1.2; margin-top: 1px; }
+  #gps-status {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 14px; margin-left: auto; flex-shrink: 0;
+    font-size: 12px; font-weight: 500;
+  }
+  #gps-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
+  #gps-dot.green { background: #1D9E75; animation: blink 1.2s ease-in-out infinite; }
+  #gps-dot.yellow { background: #EF9F27; }
+  #gps-dot.red { background: #E24B4A; }
+  @keyframes blink { 0%,100%{opacity:1}50%{opacity:0.35} }
+
+  #canvas-wrap { flex: 1; position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(255,255,255,0.92); text-align: center; padding: 30px;
+    transition: opacity 0.4s;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+  #overlay svg { width: 56px; height: 56px; color: #1D9E75; margin-bottom: 16px; }
+  #overlay h2 { font-size: 18px; font-weight: 600; color: #1a1a1a; margin-bottom: 8px; }
+  #overlay p { font-size: 14px; color: #777; line-height: 1.6; max-width: 280px; }
+
+  #accuracy-ring {
+    position: absolute; border-radius: 50%;
+    border: 2px solid rgba(29,158,117,0.3);
+    background: rgba(29,158,117,0.07);
+    pointer-events: none; transform: translate(-50%,-50%);
+    display: none;
+  }
+
+  /* start marker label */
+  #start-label {
+    position: absolute; background: #1D9E75; color: #fff;
+    font-size: 11px; font-weight: 600; padding: 2px 8px;
+    border-radius: 6px; pointer-events: none; display: none;
+    transform: translate(-50%, -130%); white-space: nowrap;
+  }
+  #start-label::after {
+    content: ''; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%);
+    border: 4px solid transparent; border-top-color: #1D9E75;
+  }
 </style>
 </head>
-
 <body>
+<div id="app">
+  <div id="toolbar">
+    <h1>🗺 Walk <span>Tracker</span></h1>
+    <button class="btn btn-start" id="btn-start" onclick="startTracking()">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      Start
+    </button>
+    <button class="btn btn-stop" id="btn-stop" onclick="stopTracking()" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      Stop
+    </button>
+    <button class="btn btn-save" id="btn-save" onclick="saveCanvas()" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Save
+    </button>
+    <button class="btn btn-clear" onclick="clearAll()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+    </button>
+  </div>
 
-<h2>🚶 Walk Tracker</h2>
+  <div id="status-bar">
+    <div class="stat-item">
+      <span class="stat-label">Points</span>
+      <span class="stat-val" id="pt-count">0</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">Distance</span>
+      <span class="stat-val" id="dist-out">0 m</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">Time</span>
+      <span class="stat-val" id="timer-out">00:00</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">Speed</span>
+      <span class="stat-val" id="speed-out">— km/h</span>
+    </div>
+    <div id="gps-status">
+      <div id="gps-dot"></div>
+      <span id="gps-text">No GPS</span>
+    </div>
+  </div>
 
-<button onclick="startTracking()">Start Tracking</button>
-<button onclick="stopTracking()">Stop</button>
-
-<div id="msg">Waiting...</div>
+  <div id="canvas-wrap">
+    <canvas id="track-canvas"></canvas>
+    <div id="accuracy-ring"></div>
+    <div id="start-label">START</div>
+    <div id="overlay" id="overlay">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+        <line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/>
+      </svg>
+      <h2>Walk Path Tracker</h2>
+      <p>Press <strong>Start</strong> and allow location permission when asked. Walk around and your path will be drawn in real time.</p>
+    </div>
+  </div>
+</div>
 
 <script>
-let watchId = null;
+const canvas = document.getElementById('track-canvas');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const gpsDot = document.getElementById('gps-dot');
+const gpsText = document.getElementById('gps-text');
+const accuracyRing = document.getElementById('accuracy-ring');
+const startLabel = document.getElementById('start-label');
 
-function isSecure() {
-  return location.protocol === "https:" || location.hostname === "localhost";
+let tracking = false;
+let watchId = null;
+let points = [];        // {x, y, lat, lng}
+let geoPoints = [];     // raw {lat, lng, accuracy, speed, ts}
+let totalDist = 0;
+let elapsed = 0;
+let timerInterval = null;
+let originLat = null, originLng = null;
+let canvasW = 0, canvasH = 0;
+let scale = 4;          // px per meter — auto-adjusts
+let dpr = window.devicePixelRatio || 1;
+
+function resizeCanvas() {
+  const wrap = document.getElementById('canvas-wrap');
+  canvasW = wrap.clientWidth;
+  canvasH = wrap.clientHeight;
+  canvas.width = canvasW * dpr;
+  canvas.height = canvasH * dpr;
+  canvas.style.width = canvasW + 'px';
+  canvas.style.height = canvasH + 'px';
+  ctx.scale(dpr, dpr);
+  redraw();
 }
 
-function startTracking() {
-  const msg = document.getElementById("msg");
+/* ---- geo math ---- */
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
 
-  // ❗ IMPORTANT CHECK
-  if (!isSecure()) {
-    msg.innerHTML = "❌ GPS only works on HTTPS or localhost.<br><br>Upload this file to a hosting site.";
+function geoToCanvas(lat, lng) {
+  const mPerDeg = 111320;
+  const dx = (lng - originLng) * mPerDeg * Math.cos(originLat * Math.PI / 180);
+  const dy = -(lat - originLat) * mPerDeg;
+  return { x: canvasW / 2 + dx * scale, y: canvasH / 2 + dy * scale };
+}
+
+function reproject() {
+  points = geoPoints.map(p => ({ ...geoToCanvas(p.lat, p.lng), ...p }));
+}
+
+function autoScale() {
+  if (geoPoints.length < 2) return;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  geoPoints.forEach(p => {
+    const c = geoToCanvas(p.lat, p.lng);
+    if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
+    if (c.y < minY) minY = c.y; if (c.y > maxY) maxY = c.y;
+  });
+  const margin = 60;
+  const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
+  const fitScale = Math.min((canvasW - margin*2) / (spanX / scale), (canvasH - margin*2) / (spanY / scale));
+  if (fitScale > 0 && fitScale < scale * 0.8) {
+    scale *= 0.85;
+  }
+}
+
+/* ---- drawing ---- */
+function drawGrid() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+  ctx.lineWidth = 0.5;
+  const step = 40;
+  for (let x = 0; x < canvasW; x += step) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvasH); ctx.stroke(); }
+  for (let y = 0; y < canvasH; y += step) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvasW,y); ctx.stroke(); }
+  ctx.restore();
+}
+
+function drawPath() {
+  if (points.length === 0) return;
+
+  if (points.length === 1) {
+    ctx.beginPath(); ctx.arc(points[0].x, points[0].y, 8, 0, Math.PI*2);
+    ctx.fillStyle = '#1D9E75'; ctx.fill();
     return;
   }
 
-  if (!navigator.geolocation) {
-    msg.innerText = "❌ GPS not supported";
-    return;
+  // shadow path
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+  ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+  ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.stroke();
+  ctx.restore();
+
+  // gradient path
+  for (let i = 1; i < points.length; i++) {
+    const t = i / (points.length - 1);
+    const r = Math.round(29 * (1-t) + 226 * t);
+    const g = Math.round(158 * (1-t) + 75 * t);
+    const b = Math.round(117 * (1-t) + 74 * t);
+    ctx.beginPath();
+    ctx.moveTo(points[i-1].x, points[i-1].y);
+    ctx.lineTo(points[i].x, points[i].y);
+    ctx.strokeStyle = `rgb(${r},${g},${b})`;
+    ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.stroke();
   }
 
-  msg.innerText = "⏳ Requesting permission...";
+  // START dot
+  const s = points[0];
+  ctx.beginPath(); ctx.arc(s.x, s.y, 8, 0, Math.PI*2);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.beginPath(); ctx.arc(s.x, s.y, 8, 0, Math.PI*2);
+  ctx.strokeStyle = '#1D9E75'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI*2);
+  ctx.fillStyle = '#1D9E75'; ctx.fill();
 
-  watchId = navigator.geolocation.watchPosition(
-    (pos) => {
-      msg.innerHTML = `
-        ✅ Tracking<br>
-        Lat: ${pos.coords.latitude}<br>
-        Lng: ${pos.coords.longitude}<br>
-        Accuracy: ${pos.coords.accuracy}m
-      `;
-    },
-    (err) => {
-      if (err.code === 1) {
-        msg.innerHTML = "❌ Permission denied<br><br>👉 Allow location in browser settings";
-      } else {
-        msg.innerText = "❌ GPS error";
-      }
-    },
-    {
-      enableHighAccuracy: true
+  // END dot
+  const e = points[points.length-1];
+  ctx.beginPath(); ctx.arc(e.x, e.y, 9, 0, Math.PI*2);
+  ctx.fillStyle = tracking ? '#E24B4A' : '#378ADD';
+  ctx.fill();
+  ctx.beginPath(); ctx.arc(e.x, e.y, 9, 0, Math.PI*2);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+
+  // position start label
+  startLabel.style.display = 'block';
+  startLabel.style.left = s.x + 'px';
+  startLabel.style.top = s.y + 'px';
+}
+
+function redraw() {
+  ctx.clearRect(0, 0, canvasW, canvasH);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvasW, canvasH);
+  drawGrid();
+  drawPath();
+}
+
+/* ---- GPS ---- */
+function onGPSSuccess(pos) {
+  const { latitude: lat, longitude: lng, accuracy, speed } = pos.coords;
+
+  if (originLat === null) {
+    originLat = lat; originLng = lng;
+    overlay.classList.add('hidden');
+  }
+
+  // filter jitter: skip if accuracy > 30m and we already have points
+  if (geoPoints.length > 0 && accuracy > 40) return;
+
+  // skip if hasn't moved enough (< 2m)
+  if (geoPoints.length > 0) {
+    const prev = geoPoints[geoPoints.length - 1];
+    const d = haversine(prev.lat, prev.lng, lat, lng);
+    if (d < 2) {
+      updateAccuracyRing(lat, lng, accuracy);
+      return;
     }
-  );
+    totalDist += d;
+  }
+
+  geoPoints.push({ lat, lng, accuracy, speed: speed || 0, ts: Date.now() });
+  autoScale();
+  reproject();
+  updateStats(speed);
+  updateAccuracyRing(lat, lng, accuracy);
+  redraw();
+
+  gpsDot.className = 'green';
+  gpsText.textContent = `GPS ±${Math.round(accuracy)}m`;
+}
+
+function onGPSError(err) {
+  gpsDot.className = 'red';
+  const msgs = { 1: 'Permission denied', 2: 'GPS unavailable', 3: 'GPS timeout' };
+  gpsText.textContent = msgs[err.code] || 'GPS error';
+
+  if (err.code === 1) {
+    overlay.classList.remove('hidden');
+    overlay.querySelector('h2').textContent = 'Location Permission Denied';
+    overlay.querySelector('p').textContent = 'Please allow location access in your browser settings, then press Start again.';
+  }
+}
+
+function updateAccuracyRing(lat, lng, accuracy) {
+  const pt = geoToCanvas(lat, lng);
+  const radiusPx = accuracy * scale;
+  accuracyRing.style.display = 'block';
+  accuracyRing.style.width = radiusPx * 2 + 'px';
+  accuracyRing.style.height = radiusPx * 2 + 'px';
+  accuracyRing.style.left = pt.x + 'px';
+  accuracyRing.style.top = pt.y + 'px';
+}
+
+/* ---- stats ---- */
+function updateStats(speed) {
+  document.getElementById('pt-count').textContent = geoPoints.length;
+  const d = totalDist;
+  document.getElementById('dist-out').textContent = d < 1000 ? Math.round(d) + ' m' : (d / 1000).toFixed(2) + ' km';
+  if (speed && speed > 0) {
+    document.getElementById('speed-out').textContent = (speed * 3.6).toFixed(1) + ' km/h';
+  }
+}
+
+function updateTimer() {
+  elapsed++;
+  const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const s = String(elapsed % 60).padStart(2, '0');
+  document.getElementById('timer-out').textContent = `${m}:${s}`;
+}
+
+/* ---- controls ---- */
+function startTracking() {
+  if (!navigator.geolocation) {
+    gpsText.textContent = 'Not supported';
+    gpsDot.className = 'red';
+    return;
+  }
+
+  tracking = true;
+  gpsDot.className = 'yellow';
+  gpsText.textContent = 'Acquiring…';
+
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  document.getElementById('btn-save').disabled = false;
+
+  timerInterval = setInterval(updateTimer, 1000);
+
+  watchId = navigator.geolocation.watchPosition(onGPSSuccess, onGPSError, {
+    enableHighAccuracy: true,
+    maximumAge: 0,
+    timeout: 20000
+  });
 }
 
 function stopTracking() {
-  if (watchId) {
-    navigator.geolocation.clearWatch(watchId);
-    document.getElementById("msg").innerText = "⏹ Stopped";
-  }
-}
-</script>
+  tracking = false;
+  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  clearInterval(timerInterval);
 
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+
+  gpsDot.className = '';
+  gpsText.textContent = 'Stopped';
+  accuracyRing.style.display = 'none';
+  redraw();
+}
+
+function saveCanvas() {
+  redraw();
+  const tmp = document.createElement('canvas');
+  tmp.width = canvas.width; tmp.height = canvas.height;
+  const tc = tmp.getContext('2d');
+  tc.scale(dpr, dpr);
+  tc.fillStyle = '#ffffff';
+  tc.fillRect(0, 0, canvasW, canvasH);
+  tc.drawImage(canvas, 0, 0, canvasW, canvasH);
+
+  // watermark
+  tc.font = `${12 * dpr}px -apple-system, sans-serif`;
+  tc.fillStyle = 'rgba(0,0,0,0.3)';
+  const ts = new Date().toLocaleString();
+  tc.fillText(`Walk Tracker • ${ts} • ${(totalDist/1000).toFixed(2)} km`, 10 * dpr, (canvasH - 10) * dpr);
+
+  const link = document.createElement('a');
+  const date = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  link.download = `walk-${date}.png`;
+  link.href = tmp.toDataURL('image/png');
+  link.click();
+}
+
+function clearAll() {
+  stopTracking();
+  geoPoints = []; points = []; totalDist = 0; elapsed = 0;
+  originLat = null; originLng = null; scale = 4;
+  document.getElementById('pt-count').textContent = '0';
+  document.getElementById('dist-out').textContent = '0 m';
+  document.getElementById('timer-out').textContent = '00:00';
+  document.getElementById('speed-out').textContent = '— km/h';
+  document.getElementById('btn-save').disabled = true;
+  startLabel.style.display = 'none';
+  accuracyRing.style.display = 'none';
+  overlay.classList.remove('hidden');
+  overlay.querySelector('h2').textContent = 'Walk Path Tracker';
+  overlay.querySelector('p').textContent = 'Press Start and allow location permission when asked. Walk around and your path will be drawn in real time.';
+  redraw();
+}
+
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+</script>
 </body>
 </html>
