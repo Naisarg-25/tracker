@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Walk Tracker Mobile Fix</title>
+
+<style>
+body { font-family: sans-serif; text-align: center; padding: 20px; }
+button { padding: 12px 20px; font-size: 16px; margin: 10px; }
+#msg { margin-top: 20px; color: red; }
+</style>
+</head>
+
+<body>
+
+<h2>🚶 Walk Tracker</h2>
+
+<button onclick="startTracking()">Start Tracking</button>
+<button onclick="stopTracking()">Stop</button>
+
+<div id="msg">Waiting...</div>
+
+<script>
+let watchId = null;
+
+function isSecure() {
+  return location.protocol === "https:" || location.hostname === "localhost";
+}
+
+function startTracking() {
+  const msg = document.getElementById("msg");
+
+  // ❗ IMPORTANT CHECK
+  if (!isSecure()) {
+    msg.innerHTML = "❌ GPS only works on HTTPS or localhost.<br><br>Upload this file to a hosting site.";
+    return;
+  }
+
+  if (!navigator.geolocation) {
+    msg.innerText = "❌ GPS not supported";
+    return;
+  }
+
+  msg.innerText = "⏳ Requesting permission...";
+
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      msg.innerHTML = `
+        ✅ Tracking<br>
+        Lat: ${pos.coords.latitude}<br>
+        Lng: ${pos.coords.longitude}<br>
+        Accuracy: ${pos.coords.accuracy}m
+      `;
+    },
+    (err) => {
+      if (err.code === 1) {
+        msg.innerHTML = "❌ Permission denied<br><br>👉 Allow location in browser settings";
+      } else {
+        msg.innerText = "❌ GPS error";
+      }
+    },
+    {
+      enableHighAccuracy: true
+    }
+  );
+}
+
+function stopTracking() {
+  if (watchId) {
+    navigator.geolocation.clearWatch(watchId);
+    document.getElementById("msg").innerText = "⏹ Stopped";
+  }
+}
+</script>
+
+</body>
+</html>
